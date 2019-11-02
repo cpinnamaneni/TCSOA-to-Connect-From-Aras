@@ -33,7 +33,12 @@ using Teamcenter.Services.Strong.Query._2010_04.SavedQuery;
 using Teamcenter.Services.Strong.Core._2010_09.DataManagement;
 using Teamcenter.Services.Strong.Core._2008_06.DataManagement;
 using Teamcenter.Services.Strong.Core._2007_01.DataManagement;
+using Teamcenter.Services.Strong.Workflow._2008_06.Workflow;
+using Teamcenter.Services.Strong.Workflow._2014_06.Workflow;
+using Teamcenter.Services.Strong.Workflow;
+
 using System.Globalization;
+using Teamcenter.Soa.Client;
 
 namespace TCSOA_To_Connect_TC_from_Aras
 {
@@ -47,6 +52,7 @@ namespace TCSOA_To_Connect_TC_from_Aras
 
         private String serverHost = null;
         private Teamcenter.ClientX.Session session;
+        private Teamcenter.Soa.Client.Connection connection;
         private static DataManagementService dmService;
         private SessionService sessionService;
         private SavedQueryService queryService;
@@ -77,6 +83,7 @@ namespace TCSOA_To_Connect_TC_from_Aras
         public void initialize()
         {
             session = new Teamcenter.ClientX.Session(serverHost);
+            connection = Teamcenter.ClientX.Session.getConnection();
 
             dmService = DataManagementService.getService(Teamcenter.ClientX.Session.getConnection());
             //prefService = PreferenceManagementService.getService(Session.getConnection());
@@ -87,6 +94,7 @@ namespace TCSOA_To_Connect_TC_from_Aras
 
         public User login()
         {
+            
             return session.login(userid, password, group, role);
             //return session.login();
         }
@@ -136,8 +144,163 @@ namespace TCSOA_To_Connect_TC_from_Aras
             UpdateInTC UpdateInTCObj = new UpdateInTC("georpras", "georpras", "", "http://detmscplmdev08.magna.global:8080/tc");
 
 
-            createECNObject();            
+
+            UpdateInTCObj.getWFProcessandSignOff();
+            //createECNObject();            
         }
+
+        private void getWFProcessandSignOff()
+        {
+
+            String QueryName = "Item Revision...";
+
+            System.Console.Out.WriteLine("Quering all the Project which are not in Setup status...... using the Saved Query -\"{0}\" ", QueryName);
+
+            String[] SQEntries = new String[] { "Item ID", "Type" };//Entries for the Saved Query 
+            String[] SQValues = new String[] { "ECN-000472", "Auto CN Revision" };//Values for each of the Entries of the Saved Query 
+
+            ModelObject[] ItemRevisionIds = QueryObjects(QueryName, SQEntries, SQValues);
+
+            dmService.GetProperties(ItemRevisionIds, new String[] { "fnd0AllWorkflows", "process_stage_list" });
+            //dmService.GetProperties(ItemRevisionIds, new String[] { "fnd0AllWorkflows" });
+
+            Teamcenter.Soa.Client.Model.Property allWFProps = ItemRevisionIds[0].GetProperty("fnd0AllWorkflows");
+            Teamcenter.Soa.Client.Model.Property processStgProps = ItemRevisionIds[0].GetProperty("process_stage_list");
+
+            ModelObject[] ProcessList = allWFProps.ModelObjectArrayValue;
+
+            if(ProcessList[0].SoaType.ClassName == "EPMTask")
+            {
+
+                WorkflowService wfService = WorkflowService.getService(connection);
+
+                EPMTask ePMTask = new EPMTask(ProcessList[0].SoaType, ProcessList[0].Uid);
+
+                //workflowService.PerformAction()
+
+                PerformActionInputInfo[] performActionInputInfo = new PerformActionInputInfo[1];
+
+                performActionInputInfo[0] = new PerformActionInputInfo();
+
+                performActionInputInfo[0].Action = "SOA_EPM_complete_action";
+                performActionInputInfo[0].ClientId = "001";
+                performActionInputInfo[0].ActionableObject = ItemRevisionIds[0];
+                performActionInputInfo[0].PropertyNameValues.Add("comments", new String[] { "OK" });
+
+                ServiceData serviceData = wfService.PerformAction3(performActionInputInfo);
+
+                if (serviceData.sizeOfPartialErrors() > 0)
+                {
+
+                }
+                //workflow.PerformAction(ProcessList[0], "SOA_EPM_complete_action","New Comments","",)
+            }
+
+            //throw new NotImplementedException();		Process_stage_list	{Teamcenter.Soa.Client.Model.ModelObject[0]}	Teamcenter.Soa.Client.Model.ModelObject[]
+
+        }
+
+        private static ModelObject[] QueryObjects(String QueryName, String[] SQEntries, String[] SQValues)
+        {
+            ImanQuery query = null;
+
+            List<String> ObjectidList = new List<String>();
+
+            // Get the service stub
+            SavedQueryService queryService = SavedQueryService.getService(Teamcenter.ClientX.Session.getConnection());
+            DataManagementService dmService = DataManagementService.getService(Teamcenter.ClientX.Session.getConnection());
+
+            try
+            {
+                GetSavedQueriesResponse savedQueries = queryService.GetSavedQueries();
+
+
+                if (savedQueries.Queries.Length == 0)
+                {
+                    Console.Out.WriteLine("There are no saved queries in the system.");
+                    return null;
+                }
+
+                // Find one called 'Item Name'
+                for (int i = 0; i < savedQueries.Queries.Length; i++)
+                {
+
+                    if (savedQueries.Queries[i].Name.Equals(QueryName))
+                    {
+                        query = savedQueries.Queries[i].Query;
+                        break;
+                    }
+                }
+            }
+            catch (ServiceException e)
+            {
+                Console.Out.WriteLine("GetSavedQueries service request failed.");
+                Console.Out.WriteLine(e.Message);
+                return null;
+            }
+
+            if (query == null)
+            {
+                Console.WriteLine("There is no saved Query with the name\"" + QueryName + "\" query.");
+                return null;
+            }
+
+            try
+            {
+
+
+                // Search for all Items, returning a maximum of 25 objects
+                QueryInput[] savedQueryInput = new QueryInput[1];
+                savedQueryInput[0] = new QueryInput();
+                savedQueryInput[0].Query = query;
+                savedQueryInput[0].MaxNumToReturn = 0;
+                savedQueryInput[0].LimitList = new Teamcenter.Soa.Client.Model.ModelObject[0];
+                savedQueryInput[0].Entries = SQEntries;// new String[] { "ID" };
+                savedQueryInput[0].Values = SQValues;//new String[1];
+                //savedQueryInput[0].Values[0] = "*";
+
+                //*****************************
+                //Execute the service operation
+                //*****************************
+                SavedQueriesResponse savedQueryResult = queryService.ExecuteSavedQueries(savedQueryInput);
+                QueryResults found = savedQueryResult.ArrayOfResults[0];
+
+
+                System.Console.Out.WriteLine("");
+                System.Console.Out.WriteLine("Found Items:");
+
+                String[] uids = new String[found.ObjectUIDS.Length];
+
+                // Page through the results 10 at a time
+                for (int i = 0; i < found.ObjectUIDS.Length; i++)
+                {
+                    uids[i] = found.ObjectUIDS[i];
+                }
+
+                ServiceData sd = dmService.LoadObjects(uids);
+                ModelObject[] foundObjs = new ModelObject[sd.sizeOfPlainObjects()];
+
+                for (int k = 0; k < sd.sizeOfPlainObjects(); k++)
+                {
+                    foundObjs[k] = sd.GetPlainObject(k);
+                }
+
+                //Teamcenter.ClientX.Session.printObjects(foundObjs);
+
+                return foundObjs;
+               
+            }
+            catch (ServiceException e)
+            {
+                Console.Out.WriteLine("ExecuteSavedQuery service request failed.");
+                Console.Out.WriteLine(e.Message);
+                return null;
+
+            }
+            return null;
+
+        }
+
 
         private static void createECNObject()
         {
